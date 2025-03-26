@@ -1,4 +1,4 @@
-package splc780d1
+package hd4470_i2c
 
 import (
 	"periph.io/x/conn/v3/i2c"
@@ -56,6 +56,33 @@ const (
 	RS = 0b00000001
 )
 
+var resetSequence = [][2]uint{
+	{0x03, 50}, // init 1-st cycle
+	{0x03, 10}, // init 2-nd cycle
+	{0x03, 10}, // init 3-rd cycle
+	{0x02, 10}, // init finish
+}
+
+var initSequence = [][2]uint{
+	{0x14, 0},    // 4-bit mode, 2 lines, 5x7 chars high
+	{0x10, 0},    // disable display
+	{0x01, 2000}, // clear screen
+	{0x06, 0},    // cursor shift right, no display move
+	{0x0c, 0},    // enable display no cursor
+	{0x01, 2000}, // clear screen
+	{0x02, 2000}, // cursor home
+}
+
+//var initSequence = [][2]uint{
+//	{cmdFunctionSet | optDataLength4Bit | opt2LinesDisplay | optFont5x8Dots, 0},
+//	{cmdDisplayControl | optDisableDisplay, 0},
+//	{cmdClearDisplay, 2000},
+//	{cmdCursorOrDisplayShift | optShiftCursorRight, 0},
+//	{cmdDisplayControl | optEnableDisplay | optDisableCursor, 0},
+//	{cmdClearDisplay, 2000},
+//	{cmdReturnHome, 2000},
+//}
+
 type Dev struct {
 	bus       i2c.Bus
 	address   uint16
@@ -69,7 +96,7 @@ func New(bus i2c.Bus, address uint16) (*Dev, error) {
 		backlight: false,
 	}
 
-	err := dev.init()
+	err := dev.Reset()
 	if err != nil {
 		return nil, err
 	}
@@ -77,27 +104,29 @@ func New(bus i2c.Bus, address uint16) (*Dev, error) {
 	return dev, nil
 }
 
-func (d *Dev) WriteString(message string, row int, startPosition byte) error {
-	var position byte
-
-	switch row {
-	case 1:
-		position = startPosition
-	case 2:
-		position = 0x40 + startPosition
-	case 3:
-		position = 0x14 + startPosition
-	case 4:
-		position = 0x54 + startPosition
+func (d *Dev) Reset() error {
+	for _, c := range resetSequence {
+		err := d.write4Bits(byte(c[0]))
+		if err != nil {
+			return err
+		}
+		sleepUs(c[1])
 	}
 
-	err := d.writeCommand(0x80+position, 0)
-	if err != nil {
-
+	for _, c := range initSequence {
+		err := d.writeInstruction(byte(c[0]), 0)
+		if err != nil {
+			return err
+		}
+		sleepUs(c[1])
 	}
 
-	for _, c := range []byte(message) {
-		err = d.writeCommand(c, RS)
+	return nil
+}
+
+func (d *Dev) Print(data string) error {
+	for _, v := range []byte(data) {
+		err := d.WriteChar(v)
 		if err != nil {
 			return err
 		}
@@ -106,38 +135,13 @@ func (d *Dev) WriteString(message string, row int, startPosition byte) error {
 	return nil
 }
 
-func (d *Dev) Clear() error {
-	err := d.writeCommand(cmdClearDisplay, E)
+func (d *Dev) WriteChar(char byte) error {
+	err := d.writeInstruction(char, RS)
 	if err != nil {
 		return err
 	}
 
-	return d.writeCommand(cmdReturnHome, E)
-}
-
-func (d *Dev) init() error {
-	initBytes := []byte{0x03, 0x03, 0x03, 0x02}
-	for _, b := range initBytes {
-		err := d.writeCommand(b, 0)
-		if err != nil {
-			return err
-		}
-	}
-
-	setupBytes := []byte{
-		cmdFunctionSet | opt2LinesDisplay | optFont5x8Dots | optDataLength4Bit,
-		cmdDisplayControl | optEnableDisplay,
-		cmdClearDisplay,
-		cmdEntryMode | optIncrement,
-	}
-	for _, b := range setupBytes {
-		err := d.writeCommand(b, 0)
-		if err != nil {
-			return err
-		}
-	}
-
-	sleepMs(200)
+	sleepUs(10)
 
 	return nil
 }
@@ -148,26 +152,7 @@ func (d *Dev) write(b byte) error {
 		return nil
 	}
 
-	sleepUs(100)
-
 	return nil
-}
-
-func (d *Dev) strobe(b byte) error {
-	if d.backlight {
-		b |= backlight
-	}
-	sleepUs(200)
-
-	err := d.write(b | E)
-	if err != nil {
-		return err
-	}
-	sleepUs(30)
-
-	err = d.write(b &^ E)
-
-	return err
 }
 
 func (d *Dev) write4Bits(b byte) error {
@@ -183,13 +168,37 @@ func (d *Dev) write4Bits(b byte) error {
 	return d.strobe(b)
 }
 
-func (d *Dev) writeCommand(cmd byte, mode byte) error {
-	err := d.write4Bits(mode | (cmd & 0xF0))
+func (d *Dev) writeInstruction(cmd byte, mode byte) error {
+	err := d.write4Bits((cmd & 0xF0) | mode)
 	if err != nil {
 		return err
 	}
 
-	return d.write4Bits(mode | ((cmd << 4) & 0xF0))
+	err = d.write4Bits(((cmd << 4) & 0xF0) | mode)
+	if err != nil {
+		return err
+	}
+
+	sleepUs(50)
+
+	return nil
+}
+
+func (d *Dev) strobe(b byte) error {
+	if d.backlight {
+		b |= backlight
+	}
+
+	err := d.write(b | E)
+	if err != nil {
+		return err
+	}
+
+	sleepUs(2)
+
+	err = d.write(b &^ E)
+
+	return err
 }
 
 func sleepUs(d uint) {
